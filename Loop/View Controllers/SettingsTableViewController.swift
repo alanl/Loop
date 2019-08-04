@@ -21,7 +21,7 @@ final class SettingsTableViewController: UITableViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
 
-        tableView.rowHeight = UITableViewAutomaticDimension
+        tableView.rowHeight = UITableView.automaticDimension
         tableView.estimatedRowHeight = 44
 
         tableView.register(SettingsTableViewCell.self, forCellReuseIdentifier: SettingsTableViewCell.className)
@@ -64,6 +64,7 @@ final class SettingsTableViewController: UITableViewController {
     fileprivate enum LoopRow: Int, CaseCountable {
         case dosing = 0
         case diagnostic
+        case estimation
     }
 
     fileprivate enum PumpRow: Int, CaseCountable {
@@ -185,6 +186,14 @@ final class SettingsTableViewController: UITableViewController {
                 cell.detailTextLabel?.text = nil
                 cell.accessoryType = .disclosureIndicator
 
+                return cell
+            case .estimation:
+                let cell = tableView.dequeueReusableCell(withIdentifier: SettingsTableViewCell.className, for: indexPath)
+                
+                cell.textLabel?.text = NSLocalizedString("Settings Review Report", comment: "The title text for the parameter estimation report cell")
+                cell.detailTextLabel?.text = nil
+                cell.accessoryType = .disclosureIndicator
+                
                 return cell
             }
         case .pump:
@@ -568,6 +577,11 @@ final class SettingsTableViewController: UITableViewController {
                 vc.title = sender?.textLabel?.text
 
                 show(vc, sender: sender)
+            case .estimation:
+                let vc = CommandResponseViewController.generateParameterEstimationReport(deviceManager: dataManager)
+                vc.title = sender?.textLabel?.text
+                
+                show(vc, sender: sender)
             case .dosing:
                 break
             }
@@ -622,11 +636,11 @@ final class SettingsTableViewController: UITableViewController {
         case .loop:
             break
         case .pump:
-            let previousTestingPumpDataDeletionSection = sections.index(of: .testingPumpDataDeletion)
+            let previousTestingPumpDataDeletionSection = sections.firstIndex(of: .testingPumpDataDeletion)
             let wasTestingPumpManager = isTestingPumpManager
             isTestingPumpManager = dataManager.pumpManager is TestingPumpManager
             if !wasTestingPumpManager, isTestingPumpManager {
-                guard let testingPumpDataDeletionSection = sections.index(of: .testingPumpDataDeletion) else {
+                guard let testingPumpDataDeletionSection = sections.firstIndex(of: .testingPumpDataDeletion) else {
                     fatalError("Expected to find testing pump data deletion section with testing pump in use")
                 }
                 tableView.insertSections([testingPumpDataDeletionSection], with: .automatic)
@@ -639,11 +653,11 @@ final class SettingsTableViewController: UITableViewController {
             tableView.reloadSections([Section.pump.rawValue], with: .fade)
             tableView.reloadSections([Section.cgm.rawValue], with: .fade)
         case .cgm:
-            let previousTestingCGMDataDeletionSection = sections.index(of: .testingCGMDataDeletion)
+            let previousTestingCGMDataDeletionSection = sections.firstIndex(of: .testingCGMDataDeletion)
             let wasTestingCGMManager = isTestingCGMManager
             isTestingCGMManager = dataManager.cgmManager is TestingCGMManager
             if !wasTestingCGMManager, isTestingCGMManager {
-                guard let testingCGMDataDeletionSection = sections.index(of: .testingCGMDataDeletion) else {
+                guard let testingCGMDataDeletionSection = sections.firstIndex(of: .testingCGMDataDeletion) else {
                     fatalError("Expected to find testing CGM data deletion section with testing CGM in use")
                 }
                 tableView.insertSections([testingCGMDataDeletionSection], with: .automatic)

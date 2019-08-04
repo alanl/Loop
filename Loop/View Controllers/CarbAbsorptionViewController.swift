@@ -56,7 +56,7 @@ final class CarbAbsorptionViewController: ChartsTableViewController, Identifiabl
 
         navigationItem.rightBarButtonItems?.append(editButtonItem)
 
-        tableView.rowHeight = UITableViewAutomaticDimension
+        tableView.rowHeight = UITableView.automaticDimension
 
         reloadData(animated: false)
     }
@@ -122,8 +122,9 @@ final class CarbAbsorptionViewController: ChartsTableViewController, Identifiabl
         }
         charts.startDate = chartStartDate
 
-        let midnight = Calendar.current.startOfDay(for: Date())
-        let listStart = min(midnight, chartStartDate, Date(timeIntervalSinceNow: -deviceManager.loopManager.carbStore.maximumAbsorptionTimeInterval))
+        // Extend view to past 24 hours (per Bharat)
+        let visiblePeriod = Calendar.current.date(byAdding: .hour, value: -24, to: Date()) ?? Calendar.current.startOfDay(for: Date())
+        let listStart = min(visiblePeriod, chartStartDate)
 
         let reloadGroup = DispatchGroup()
         let shouldUpdateGlucose = currentContext.contains(.glucose)
@@ -175,8 +176,8 @@ final class CarbAbsorptionViewController: ChartsTableViewController, Identifiabl
 
         if shouldUpdateCarbs {
             reloadGroup.enter()
-            deviceManager.loopManager.carbStore.getTotalCarbs(since: midnight) { (result) in
-                switch result {
+            // Extend view to past 24 hours (per Bharat)
+            self.deviceManager.loopManager.carbStore.getTotalCarbs(since: visiblePeriod) { (result) in                switch result {
                 case .success(let total):
                     carbTotal = total
                 case .failure(let error):
@@ -432,7 +433,7 @@ final class CarbAbsorptionViewController: ChartsTableViewController, Identifiabl
         }
     }
 
-    public override func tableView(_ tableView: UITableView, commit editingStyle: UITableViewCellEditingStyle, forRowAt indexPath: IndexPath) {
+    public override func tableView(_ tableView: UITableView, commit editingStyle: UITableViewCell.EditingStyle, forRowAt indexPath: IndexPath) {
         if editingStyle == .delete {
             let status = carbStatuses[indexPath.row]
             deviceManager.loopManager.carbStore.deleteCarbEntry(status.entry) { (result) -> Void in

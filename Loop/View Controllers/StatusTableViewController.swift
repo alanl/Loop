@@ -31,11 +31,8 @@ final class StatusTableViewController: ChartsTableViewController {
         super.viewDidLoad()
 
         statusCharts.glucose.glucoseDisplayRange = HKQuantity(unit: .milligramsPerDeciliter, doubleValue: 100)...HKQuantity(unit: .milligramsPerDeciliter, doubleValue: 175)
-        
-        if let pumpManager = deviceManager.pumpManager {
-            self.basalDeliveryState = pumpManager.status.basalDeliveryState
-            pumpManager.addStatusObserver(self, queue: .main)
-        }
+
+        registerPumpManager()
 
         let notificationCenter = NotificationCenter.default
 
@@ -69,6 +66,7 @@ final class StatusTableViewController: ChartsTableViewController {
             },
             notificationCenter.addObserver(forName: .PumpManagerChanged, object: deviceManager, queue: nil) { [weak self] (notification: Notification) in
                 DispatchQueue.main.async {
+                    self?.registerPumpManager()
                     self?.configurePumpManagerHUDViews()
                 }
             }
@@ -221,6 +219,14 @@ final class StatusTableViewController: ChartsTableViewController {
 
     override func glucoseUnitDidChange() {
         refreshContext = RefreshContext.all
+    }
+
+    private func registerPumpManager() {
+        if let pumpManager = deviceManager.pumpManager {
+            self.basalDeliveryState = pumpManager.status.basalDeliveryState
+            pumpManager.removeStatusObserver(self)
+            pumpManager.addStatusObserver(self, queue: .main)
+        }
     }
 
     private lazy var statusCharts = StatusChartsManager(colors: .default, settings: .default)
@@ -436,8 +442,12 @@ final class StatusTableViewController: ChartsTableViewController {
             if let iobValues = iobValues {
                 charts.setIOBValues(iobValues)
             }
-            if let index = charts.iob.iobPoints.closestIndex(priorTo: Date()) {
-                self.currentIOBDescription = String(describing: charts.iob.iobPoints[index].y)
+
+            // Show the larger of the value either before or after the current date
+            if let maxValue = charts.iob.iobPoints.allElementsAdjacent(to: Date()).max(by: {
+                return $0.y.scalar < $1.y.scalar
+            }) {
+                self.currentIOBDescription = String(describing: maxValue.y)
             } else {
                 self.currentIOBDescription = nil
             }
@@ -629,7 +639,7 @@ final class StatusTableViewController: ChartsTableViewController {
                 } else if let cell = tableView.cellForRow(at: statusIndexPath) {
                     // If only the enacting state changed, update the activity indicator
                     if isEnacting {
-                        let indicatorView = UIActivityIndicatorView(activityIndicatorStyle: .gray)
+                        let indicatorView = UIActivityIndicatorView(style: .gray)
                         indicatorView.startAnimating()
                         cell.accessoryView = indicatorView
                     } else {
@@ -790,7 +800,7 @@ final class StatusTableViewController: ChartsTableViewController {
                     cell.selectionStyle = .default
 
                     if enacting {
-                        let indicatorView = UIActivityIndicatorView(activityIndicatorStyle: .gray)
+                        let indicatorView = UIActivityIndicatorView(style: .gray)
                         indicatorView.startAnimating()
                         cell.accessoryView = indicatorView
                     } else {
@@ -826,7 +836,7 @@ final class StatusTableViewController: ChartsTableViewController {
                     cell.titleLabel.text = NSLocalizedString("Starting Bolus", comment: "The title of the cell indicating a bolus is being sent")
                     cell.subtitleLabel.text = nil
 
-                    let indicatorView = UIActivityIndicatorView(activityIndicatorStyle: .gray)
+                    let indicatorView = UIActivityIndicatorView(style: .gray)
                     indicatorView.startAnimating()
                     cell.accessoryView = indicatorView
                     return cell
@@ -843,7 +853,7 @@ final class StatusTableViewController: ChartsTableViewController {
                     cell.titleLabel.text = NSLocalizedString("Canceling Bolus", comment: "The title of the cell indicating a bolus is being canceled")
                     cell.subtitleLabel.text = nil
 
-                    let indicatorView = UIActivityIndicatorView(activityIndicatorStyle: .gray)
+                    let indicatorView = UIActivityIndicatorView(style: .gray)
                     indicatorView.startAnimating()
                     cell.accessoryView = indicatorView
                     return cell
@@ -852,7 +862,7 @@ final class StatusTableViewController: ChartsTableViewController {
                     cell.titleLabel.text = NSLocalizedString("Pump Suspended", comment: "The title of the cell indicating the pump is suspended")
 
                     if resuming {
-                        let indicatorView = UIActivityIndicatorView(activityIndicatorStyle: .gray)
+                        let indicatorView = UIActivityIndicatorView(style: .gray)
                         indicatorView.startAnimating()
                         cell.accessoryView = indicatorView
                         cell.subtitleLabel.text = ""
@@ -910,7 +920,7 @@ final class StatusTableViewController: ChartsTableViewController {
         switch Section(rawValue: indexPath.section)! {
         case .charts:
             // Compute the height of the HUD, defaulting to 70
-            let hudHeight = ceil(hudView?.systemLayoutSizeFitting(UILayoutFittingCompressedSize).height ?? 70)
+            let hudHeight = ceil(hudView?.systemLayoutSizeFitting(UIView.layoutFittingCompressedSize).height ?? 70)
             var availableSize = max(tableView.bounds.width, tableView.bounds.height)
 
             if #available(iOS 11.0, *) {
@@ -928,7 +938,7 @@ final class StatusTableViewController: ChartsTableViewController {
                 return max(106, 0.21 * availableSize)
             }
         case .hud, .status:
-            return UITableViewAutomaticDimension
+            return UITableView.automaticDimension
         }
     }
 
@@ -1124,7 +1134,7 @@ final class StatusTableViewController: ChartsTableViewController {
         item.accessibilityLabel = NSLocalizedString("Pre-Meal Targets", comment: "The label of the pre-meal mode toggle button")
 
         if selected {
-            item.accessibilityTraits = item.accessibilityTraits | UIAccessibilityTraitSelected
+            item.accessibilityTraits.insert(.selected)
             item.accessibilityHint = NSLocalizedString("Disables", comment: "The action hint of the workout mode toggle button when enabled")
         } else {
             item.accessibilityHint = NSLocalizedString("Enables", comment: "The action hint of the workout mode toggle button when disabled")
@@ -1140,7 +1150,7 @@ final class StatusTableViewController: ChartsTableViewController {
         item.accessibilityLabel = NSLocalizedString("Workout Targets", comment: "The label of the workout mode toggle button")
 
         if selected {
-            item.accessibilityTraits = item.accessibilityTraits | UIAccessibilityTraitSelected
+            item.accessibilityTraits.insert(.selected)
             item.accessibilityHint = NSLocalizedString("Disables", comment: "The action hint of the workout mode toggle button when enabled")
         } else {
             item.accessibilityHint = NSLocalizedString("Enables", comment: "The action hint of the workout mode toggle button when disabled")
@@ -1271,7 +1281,7 @@ final class StatusTableViewController: ChartsTableViewController {
 
     // MARK: - Testing scenarios
 
-    override func motionEnded(_ motion: UIEventSubtype, with event: UIEvent?) {
+    override func motionEnded(_ motion: UIEvent.EventSubtype, with event: UIEvent?) {
         if let testingScenariosManager = deviceManager.testingScenariosManager, testingScenariosManager.scenarioURLs.isEmpty {
             if motion == .motionShake {
                 presentScenarioSelector()
@@ -1321,6 +1331,7 @@ extension StatusTableViewController: CompletionDelegate {
 extension StatusTableViewController: PumpManagerStatusObserver {
     func pumpManager(_ pumpManager: PumpManager, didUpdate status: PumpManagerStatus, oldStatus: PumpManagerStatus) {
         dispatchPrecondition(condition: .onQueue(.main))
+        log.default("PumpManager:%{public}@ did update status", String(describing: type(of: pumpManager)))
 
         self.basalDeliveryState = status.basalDeliveryState
         self.bolusState = status.bolusState
