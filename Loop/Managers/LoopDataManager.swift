@@ -44,17 +44,18 @@ final class LoopDataManager {
 
     init(
         lastLoopCompleted: Date?,
-        lastTempBasal: DoseEntry?,
+        basalDeliveryState: PumpManagerStatus.BasalDeliveryState?,
         basalRateSchedule: BasalRateSchedule? = UserDefaults.appGroup?.basalRateSchedule,
         carbRatioSchedule: CarbRatioSchedule? = UserDefaults.appGroup?.carbRatioSchedule,
         insulinModelSettings: InsulinModelSettings? = UserDefaults.appGroup?.insulinModelSettings,
         insulinSensitivitySchedule: InsulinSensitivitySchedule? = UserDefaults.appGroup?.insulinSensitivitySchedule,
         settings: LoopSettings = UserDefaults.appGroup?.loopSettings ?? LoopSettings(),
-        overrideHistory: TemporaryScheduleOverrideHistory = UserDefaults.appGroup?.overrideHistory ?? .init()
+        overrideHistory: TemporaryScheduleOverrideHistory = UserDefaults.appGroup?.overrideHistory ?? .init(),
+        lastPumpEventsReconciliation: Date?
     ) {
         self.logger = DiagnosticLogger.shared.forCategory("LoopDataManager")
         self.lockedLastLoopCompleted = Locked(lastLoopCompleted)
-        self.lastTempBasal = lastTempBasal
+        self.lockedBasalDeliveryState = Locked(basalDeliveryState)
         self.settings = settings
         self.overrideHistory = overrideHistory
 
@@ -76,7 +77,8 @@ final class LoopDataManager {
             insulinModel: insulinModelSettings?.model,
             basalProfile: basalRateSchedule,
             insulinSensitivitySchedule: insulinSensitivitySchedule,
-            overrideHistory: overrideHistory
+            overrideHistory: overrideHistory,
+            lastPumpEventsReconciliation: lastPumpEventsReconciliation
         )
 
         glucoseStore = GlucoseStore(healthStore: healthStore, cacheStore: cacheStore, cacheLength: .hours(24))
@@ -186,7 +188,17 @@ final class LoopDataManager {
 
     fileprivate var carbsOnBoard: CarbValue?
 
-    fileprivate var lastTempBasal: DoseEntry?
+    var basalDeliveryState: PumpManagerStatus.BasalDeliveryState? {
+        get {
+            return lockedBasalDeliveryState.value
+        }
+        set {
+            self.logger.debug("Updating basalDeliveryState to \(String(describing: newValue))")
+            lockedBasalDeliveryState.value = newValue
+        }
+    }
+    private let lockedBasalDeliveryState: Locked<PumpManagerStatus.BasalDeliveryState?>
+
     fileprivate var lastRequestedBolus: DoseEntry?
 
     /// The last date at which a loop completed, from prediction to dose (if dosing is enabled)
@@ -502,19 +514,17 @@ extension LoopDataManager {
         }
     }
 
-    /// Adds a bolus enacted by the pump, but not fully delivered.
+    /// Notifies the manager that the bolus is confirmed, but not fully delivered.
     ///
     /// - Parameters:
     ///   - dose: The DoseEntry representing the confirmed bolus
-    func addConfirmedBolus(_ dose: DoseEntry, completion: (() -> Void)?) {
-        self.doseStore.addPendingPumpEvent(.enactedBolus(dose: dose)) {
-            self.dataAccessQueue.async {
-                self.lastRequestedBolus = nil
-                self.insulinEffect = nil
-                self.notify(forChange: .bolus)
+    func bolusConfirmed(_ dose: DoseEntry, completion: (() -> Void)?) {
+        self.dataAccessQueue.async {
+            self.lastRequestedBolus = nil
+            self.insulinEffect = nil
+            self.notify(forChange: .bolus)
 
-                completion?()
-            }
+            completion?()
         }
     }
 
@@ -524,18 +534,13 @@ extension LoopDataManager {
     ///   - events: The pump events to add
     ///   - completion: A closure called once upon completion
     ///   - error: An error explaining why the events could not be saved.
-    func addPumpEvents(_ events: [NewPumpEvent], completion: @escaping (_ error: DoseStore.DoseStoreError?) -> Void) {
-        doseStore.addPumpEvents(events) { (error) in
+    func addPumpEvents(_ events: [NewPumpEvent], lastReconciliation: Date?, completion: @escaping (_ error: DoseStore.DoseStoreError?) -> Void) {
+        doseStore.addPumpEvents(events, lastReconciliation: lastReconciliation) { (error) in
             self.dataAccessQueue.async {
                 if error == nil {
                     self.insulinEffect = nil
-                    // Expire any bolus values now represented in the insulin data
-                    // TODO: Ask pumpManager if dose represented in data
-                    if let bolusEndDate = self.lastRequestedBolus?.endDate, bolusEndDate < Date() {
-                        self.lastRequestedBolus = nil
-                    }
+                    self.lastRequestedBolus = nil
                 }
-
                 completion(error)
             }
         }
@@ -773,7 +778,7 @@ extension LoopDataManager {
         let pendingTempBasalInsulin: Double
         let date = Date()
 
-        if let lastTempBasal = lastTempBasal, lastTempBasal.endDate > date {
+        if let basalDeliveryState = basalDeliveryState, case .tempBasal(let lastTempBasal) = basalDeliveryState, lastTempBasal.endDate > date {
             let normalBasalRate = basalRates.value(at: date)
             let remainingTime = lastTempBasal.endDate.timeIntervalSince(date)
             let remainingUnits = (lastTempBasal.unitsPerHour - normalBasalRate) * remainingTime.hours
@@ -937,6 +942,14 @@ extension LoopDataManager {
         let rateRounder = { (_ rate: Double) in
             return self.delegate?.loopDataManager(self, roundBasalRate: rate) ?? rate
         }
+
+        let lastTempBasal: DoseEntry?
+
+        if case .some(.tempBasal(let dose)) = basalDeliveryState {
+            lastTempBasal = dose
+        } else {
+            lastTempBasal = nil
+        }
         
         let tempBasal = predictedGlucose.recommendedTempBasal(
             to: glucoseTargetRange,
@@ -951,6 +964,8 @@ extension LoopDataManager {
         )
         
         if let temp = tempBasal {
+            self.logger.default("Current basal state: \(String(describing: basalDeliveryState))")
+            self.logger.default("Recommending temp basal: \(temp) at \(startDate)")
             recommendedTempBasal = (recommendation: temp, date: startDate)
         } else {
             recommendedTempBasal = nil
@@ -991,10 +1006,8 @@ extension LoopDataManager {
         delegate?.loopDataManager(self, didRecommendBasalChange: recommendedTempBasal) { (result) in
             self.dataAccessQueue.async {
                 switch result {
-                case .success(let basal):
-                    self.lastTempBasal = basal
+                case .success:
                     self.recommendedTempBasal = nil
-
                     completion(nil)
                 case .failure(let error):
                     completion(error)
@@ -1015,9 +1028,6 @@ protocol LoopState {
 
     /// A timeline of average velocity of glucose change counteracting predicted insulin effects
     var insulinCounteractionEffects: [GlucoseEffectVelocity] { get }
-
-    /// The last set temp basal
-    var lastTempBasal: DoseEntry? { get }
 
     /// The calculated timeline of predicted glucose values
     var predictedGlucose: [PredictedGlucoseValue]? { get }
@@ -1067,11 +1077,6 @@ extension LoopDataManager {
         var insulinCounteractionEffects: [GlucoseEffectVelocity] {
             dispatchPrecondition(condition: .onQueue(loopDataManager.dataAccessQueue))
             return loopDataManager.insulinCounteractionEffects
-        }
-
-        var lastTempBasal: DoseEntry? {
-            dispatchPrecondition(condition: .onQueue(loopDataManager.dataAccessQueue))
-            return loopDataManager.lastTempBasal
         }
 
         var predictedGlucose: [PredictedGlucoseValue]? {
@@ -1188,7 +1193,7 @@ extension LoopDataManager {
                 "recommendedBolus: \(String(describing: state.recommendedBolus))",
                 "lastBolus: \(String(describing: manager.lastRequestedBolus))",
                 "lastLoopCompleted: \(String(describing: manager.lastLoopCompleted))",
-                "lastTempBasal: \(String(describing: state.lastTempBasal))",
+                "basalDeliveryState: \(String(describing: manager.basalDeliveryState))",
                 "carbsOnBoard: \(String(describing: state.carbsOnBoard))",
                 "error: \(String(describing: state.error))",
                 "",
@@ -1251,13 +1256,6 @@ protocol LoopDataManagerDelegate: class {
     /// - Returns: a supported bolus volume in U. The volume returned should not be larger than the passed in rate.
     func loopDataManager(_ manager: LoopDataManager, roundBolusVolume units: Double) -> Double
 }
-
-extension DoseStore {
-    var lastAddedPumpData: Date {
-        return max(lastReservoirValue?.startDate ?? .distantPast, lastAddedPumpEvents)
-    }
-}
-
 
 private extension TemporaryScheduleOverride {
     func isBasalRateScheduleOverriden(at date: Date) -> Bool {
